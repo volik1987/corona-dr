@@ -1,6 +1,6 @@
 # Corona DR — визуализация «как Corona» и сетевой рендер для Blender
 
-Аддон (extension) для Blender 4.2+ (проверен на **Blender 5.1.1**, macOS).
+Аддон (extension) для Blender 4.2+ (проверен на **Blender 5.1.1 и 5.2.3 LTS**, macOS).
 Два независимых блока, оба — в **Properties → Render**:
 
 1. **Corona (визуализация)** — режим «как Corona Render» поверх Cycles.
@@ -8,17 +8,17 @@
    (аналог Corona DR). Работает **с любой сценой**: с режимом Corona, с обычными
    настройками Cycles и собственным компоновщиком, а также с EEVEE.
 
-**Скачать:** [corona_dr-1.0.0.zip](https://github.com/volik1987/corona-dr/releases/latest/download/corona_dr-1.0.0.zip)
+**Скачать:** [corona_dr-1.0.1.zip](https://github.com/volik1987/corona-dr/releases/latest/download/corona_dr-1.0.1.zip)
 (страница релизов — [Releases](https://github.com/volik1987/corona-dr/releases)).
 В репозитории файл собирается в `dist/` командой `./build.sh`.
 
 ## Установка
 
 Blender → Edit → Preferences → Get Extensions → ⌄ (вверху справа) → **Install from Disk…** →
-выбрать `corona_dr-1.0.0.zip`. Или из терминала:
+выбрать `corona_dr-1.0.1.zip`. Или из терминала:
 
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender --command extension install-file -r user_default -e dist/corona_dr-1.0.0.zip
+/Applications/Blender.app/Contents/MacOS/Blender --command extension install-file -r user_default -e dist/corona_dr-1.0.1.zip
 ```
 
 Аддон ставится на **каждый** компьютер, который будет рендерить (или узел запускается без
@@ -123,7 +123,7 @@ Denoising Albedo/Normal и light groups). Головной склеивает ч
   и могут дать стыки; для EEVEE надёжнее режим «Анимация».
 - Узлы принимают сцены от любого компьютера сети — задайте общий ключ, если сеть не доверенная.
   Скрипты внутри .blend на узлах не выполняются (`-Y`).
-- Проверено на Blender 5.1.1; для 4.2–4.5 есть ветки совместимости (Composite-узел,
+- Проверено на Blender 5.1.1 и 5.2.3 LTS; для 4.2–4.5 есть ветки совместимости (Composite-узел,
   старые свойства узлов), но они не тестировались.
 
 ## Тесты

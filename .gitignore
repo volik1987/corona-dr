@@ -1,0 +1,6 @@
+tests/out/
+tests/out_addon/
+__pycache__/
+*.pyc
+dist/
+.DS_Store

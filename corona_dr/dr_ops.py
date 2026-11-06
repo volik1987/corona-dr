@@ -27,7 +27,13 @@ def prefs():
 def blender_bin():
     p = prefs()
     if p and p.blender_path:
-        return bpy.path.abspath(p.blender_path)
+        path = bpy.path.abspath(p.blender_path).rstrip("/\\")
+        if path.endswith(".app") and os.path.isdir(path):      # macOS: указали сам Blender.app
+            path = os.path.join(path, "Contents", "MacOS", "Blender")
+        if os.path.isdir(path):                                 # Windows: указали папку Blender
+            exe = os.path.join(path, "blender.exe")
+            path = exe if os.path.exists(exe) else path
+        return path
     return bpy.app.binary_path
 
 
@@ -97,16 +103,26 @@ def _cleanup_old_workdirs(max_age_h=24):
                 pass
 
 
-def _pack_blend(src, dst):
-    """Упаковать ресурсы в копию сцены отдельным процессом Blender (файл пользователя не меняется)."""
+def _pack_blend(src, dst, bin_path):
+    """Упаковать ресурсы в копию сцены отдельным процессом Blender (файл пользователя не меняется).
+    Возвращает список внешних файлов, которые не упаковались (кэши, видео, VDB…)."""
     expr = ("import bpy\n"
             "try:\n bpy.ops.file.pack_all()\nexcept Exception as e:\n print('pack_all:', e)\n"
             "try:\n bpy.ops.file.pack_libraries()\nexcept Exception as e:\n pass\n"
+            "import os\n"
+            "roots = [os.path.normcase(os.path.abspath(r)) for r in (bpy.utils.resource_path('LOCAL'),\n"
+            "         bpy.utils.resource_path('SYSTEM'), os.path.dirname(bpy.app.binary_path)) if r]\n"
+            "for p in sorted(set(bpy.utils.blend_paths(absolute=True, packed=False))):\n"
+            " ap = os.path.normcase(os.path.abspath(p))\n"
+            " if os.path.exists(p) and not any(ap.startswith(r) for r in roots):\n"   # ассеты Blender есть везде
+            "  print('CDR_EXTERNAL ' + p, flush=True)\n"
             f"bpy.ops.wm.save_as_mainfile(filepath={dst!r}, compress=True)\n")
-    res = subprocess.run([blender_bin(), "-b", src, "-Y", "--python-expr", expr],
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    res = subprocess.run([bin_path, "-b", src, "-Y", "--python-expr", expr],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                         errors="replace", stdin=subprocess.DEVNULL, **P.POPEN_KW)
     if not os.path.exists(dst):
         raise RuntimeError("не удалось упаковать сцену: " + " | ".join(res.stdout.splitlines()[-4:]))
+    return [l[13:].strip() for l in res.stdout.splitlines() if l.startswith("CDR_EXTERNAL ")]
 
 
 def _post_mode(scene):
@@ -136,6 +152,11 @@ def start_job(context):
     if scene.camera is None:
         raise RuntimeError("в сцене нет камеры")
 
+    # Всё, что читается из bpy, читаем здесь, в главном потоке: потоку задания остаются готовые значения.
+    bin_path = blender_bin()
+    if not os.path.isfile(bin_path):
+        raise RuntimeError(f"не найден Blender для рендера: {bin_path} (настройки аддона)")
+    warnings = []
     _cleanup_old_workdirs()
     workdir = tempfile.mkdtemp(prefix="corona_dr_")
     raw = os.path.join(workdir, "scene_raw.blend")
@@ -148,6 +169,7 @@ def start_job(context):
     runner.node_map = [(n.host, n.port) for n in items]
     key = p.key if p else ""
     device = "CPU" if dr.force_cpu else None
+    scene_name = scene.name
     log = print
 
     if dr.mode == "FRAME":
@@ -173,48 +195,76 @@ def start_job(context):
                 denoise = bool(scene.cycles.use_denoising)
         else:
             denoise = False
-        vl = context.view_layer.name
+        vl = corona.main_view_layer(scene).name
+        if post_mode == "scene" and _compositor_layers(scene) - {vl}:
+            warnings.append("компоновщик сцены берёт другие view layers — по сети собирается только "
+                            f"«{vl}», остальные слои получат его же изображение")
         vfb_s = corona.vfb_settings(scene) if post_mode == "corona" else {}
         if post_mode == "none":
             post_mode, vfb_s = "corona", {"denoise": denoise}  # «пустой» VFB = только денойз
+        tiles, tile_kind, frame = dr.tiles, dr.tile_kind, scene.frame_current
 
         def make():
-            return M.build_tile_job(blend, nodes, W, H, dr.tiles, dr.tile_kind, scene.frame_current, vl,
-                                    workdir, blender_bin(), vfb_s, denoise, out_final, fmt, key=key,
-                                    device=device, log=log, post_mode=post_mode)
+            return M.build_tile_job(blend, nodes, W, H, tiles, tile_kind, frame, vl,
+                                    workdir, bin_path, vfb_s, denoise, out_final, fmt, key=key,
+                                    device=device, log=log, post_mode=post_mode, scene=scene_name)
         runner.final_path = out_final
     else:
         frames = list(range(scene.frame_start, scene.frame_end + 1, max(1, scene.frame_step)))
         imf = r.image_settings
         is_video = getattr(imf, "media_type", "") == "VIDEO" or imf.file_format == "FFMPEG"
+        # Относительный путь Output у несохранённого файла — кладём кадры в ~/corona_dr_render
+        fallback = os.path.join(os.path.expanduser("~"), "corona_dr_render",
+                                bpy.path.clean_name(scene.name))
         base = {}
         for f in frames:
             if is_video:
-                base[f] = bpy.path.abspath(r.filepath) + f"{f:04d}"
+                path = bpy.path.abspath(r.filepath) + f"{f:04d}"
             else:
                 path = r.frame_path(frame=f)
                 stem, e = os.path.splitext(path)
-                base[f] = stem if r.use_file_extension and e else path
-        node_frames = [M.parse_frames(n.frames) for n in items]
+                path = stem if r.use_file_extension and e else path
+            if path.startswith("//") or not os.path.isabs(path):
+                path = os.path.join(fallback, os.path.basename(path) or f"{f:04d}")
+            base[f] = path
+        if base and os.path.dirname(base[frames[0]]).startswith(fallback):
+            warnings.append(f"путь Output относительный, а файл не сохранён — кадры пойдут в {fallback}")
+        try:
+            node_frames = [M.parse_frames(n.frames) for n in items]
+        except ValueError:
+            raise RuntimeError("не разобрать диапазоны кадров в таблице узлов (пример: 1-50, 60, 70-80)")
+        if dr.distribution == "MANUAL":
+            allowed = set(frames)
+            dropped = sorted({f for lst in node_frames for f in lst if f not in allowed})
+            if dropped:
+                warnings.append(f"кадры вне диапазона сцены пропущены: {_frames_text(dropped)}")
+        distribution, chunk, steal = dr.distribution, dr.chunk, dr.steal
 
         def dest(f, ext):
             b = base.get(f) or os.path.join(os.path.dirname(base[frames[0]]), f"{f:04d}")
             return b + ext
 
         def make():
-            return M.build_anim_job(blend, nodes, frames, dest, workdir, distribution=dr.distribution,
-                                    node_frames=node_frames, chunk=dr.chunk, steal=dr.steal,
-                                    key=key, device=device, log=log)
+            return M.build_anim_job(blend, nodes, frames, dest, workdir, distribution=distribution,
+                                    node_frames=node_frames, chunk=chunk, steal=steal,
+                                    key=key, device=device, log=log, scene=scene_name)
         runner.final_path = os.path.dirname(base[frames[0]])
 
     def work():
         try:
             runner.status = "упаковка сцены"
-            _pack_blend(raw, blend)
+            external = _pack_blend(raw, blend, bin_path)
             if runner.cancelled:
                 raise RuntimeError("отменено")
             runner.status = "рендер"
             runner.job = make()
+            for w in warnings:
+                runner.job.log("внимание: " + w)
+            if external:
+                shown = ", ".join(os.path.basename(x) for x in external[:6])
+                more = f" и ещё {len(external) - 6}" if len(external) > 6 else ""
+                runner.job.log(f"внимание: не упаковано {len(external)} внешних файлов ({shown}{more}) — "
+                               "на узлах они нужны по тем же путям")
             runner.job.start()
             runner.job.wait()
             runner.ok = runner.job.ok
@@ -231,6 +281,24 @@ def start_job(context):
     dr.job_status = "подготовка"
     _ensure_timer()
     return runner
+
+
+def _frames_text(frames):
+    out, i = [], 0
+    while i < len(frames):
+        j = i
+        while j + 1 < len(frames) and frames[j + 1] == frames[j] + 1:
+            j += 1
+        out.append(str(frames[i]) if i == j else f"{frames[i]}-{frames[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+def _compositor_layers(scene):
+    tree = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
+    if tree is None or not scene.render.use_compositing:
+        return set()
+    return {n.layer for n in tree.nodes if n.type == "R_LAYERS" and getattr(n, "scene", None) in (None, scene)}
 
 
 def show_image(path, name="Corona DR", editor=True, new_window=True):
@@ -282,6 +350,10 @@ def _tick():
     global _timer_on
     try:
         busy = _update_ui()
+    except AttributeError as e:      # аддон выключен — свойств сцены больше нет
+        print("Corona DR timer остановлен:", e)
+        _timer_on = False
+        return None
     except Exception as e:
         print("Corona DR timer:", e)
         busy = True
@@ -448,19 +520,31 @@ class CORONA_OT_node_add(bpy.types.Operator):
             return {"CANCELLED"}
         it = dr.nodes.add()
         it.host, it.port, it.name = host, dr.manual_port, host
+        s = None
         try:
             s = P.connect(host, dr.manual_port, timeout=2.0)
+            s.settimeout(3.0)          # главный поток Blender: долго не ждём
             p = prefs()
             P.send_msg(s, {"cmd": "hello", "key": p.key if p else ""})
             hdr, _ = P.recv_msg(s)
-            P.send_msg(s, {"cmd": "bye"})
-            s.close()
             if hdr.get("type") == "info":
-                it.name, it.cores, it.info, it.status = hdr["name"], hdr.get("cores", 0), hdr.get("uid", ""), "свободен"
-            else:
+                P.send_msg(s, {"cmd": "bye"})
+                it.name, it.cores, it.info, it.status = (hdr.get("name") or host, hdr.get("cores", 0),
+                                                         hdr.get("uid", ""), "свободен")
+            elif hdr.get("type") == "error":
                 it.status = hdr.get("error", "?")
+            else:
+                it.status = "по этому адресу не узел Corona DR"
         except OSError as e:
-            it.status = f"нет связи: {e}"
+            it.status = f"нет связи: {e}" if not isinstance(e, TimeoutError) else "не отвечает (не узел Corona DR?)"
+        except Exception:
+            it.status = "по этому адресу не узел Corona DR"
+        finally:
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
         dr.index = len(dr.nodes) - 1
         return {"FINISHED"}
 
@@ -550,8 +634,12 @@ def register():
 
 
 def unregister():
+    global _timer_on
     if RUNNER:
         RUNNER.cancel()
     stop_node()
+    if bpy.app.timers.is_registered(_tick):
+        bpy.app.timers.unregister(_tick)
+    _timer_on = False
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

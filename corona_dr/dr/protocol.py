@@ -16,6 +16,17 @@ DISCOVER_REQ = b"CORONA_DR_DISCOVER"
 MCAST_GROUP = "239.77.19.40"  # дублируем поиск мультикастом (доходит и до узлов на этой же машине)
 _HDR = struct.Struct("!4sIQ")
 CHUNK = 1 << 20
+IO_TIMEOUT = 60.0             # сколько ждать данных посреди сообщения (обрыв Wi-Fi, выключенный ПК)
+
+# Windows: без этого каждый запуск blender.exe из GUI открывает окно консоли
+POPEN_KW = {"creationflags": 0x08000000} if os.name == "nt" else {}   # CREATE_NO_WINDOW
+
+
+def set_keepalive(sock):
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        pass
 
 
 class ProtocolError(Exception):
@@ -83,7 +94,8 @@ def recv_msg(sock, save_to=None, progress=None):
 def connect(host, port, timeout=5.0):
     s = socket.create_connection((host, port), timeout=timeout)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    s.settimeout(None)
+    set_keepalive(s)
+    s.settimeout(IO_TIMEOUT)
     return s
 
 
@@ -156,6 +168,8 @@ def discover(timeout=1.5, port=DISCOVERY_PORT, extra_hosts=()):
         s.settimeout(left)
         try:
             data, (ip, _p) = s.recvfrom(65536)
+        except ConnectionResetError:   # Windows: ICMP «порт недоступен» от прошлой рассылки
+            continue
         except (socket.timeout, OSError):
             break
         try:

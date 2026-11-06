@@ -113,7 +113,7 @@ class CORONA_OT_lightmix_setup(bpy.types.Operator):
 
     def execute(self, context):
         sc = context.scene
-        n = corona.setup_lightmix(sc, context.view_layer)
+        n = corona.setup_lightmix(sc, corona.main_view_layer(sc))
         sc.corona.lightmix_on = True
         corona.apply_all(sc)
         self.report({"INFO"}, f"Новых групп: {n}. Меняйте цвет/силу после рендера — кадр пересчитается без рендера.")
@@ -125,7 +125,7 @@ class CORONA_OT_lightmix_refresh(bpy.types.Operator):
     bl_label = "Обновить список групп"
 
     def execute(self, context):
-        corona.refresh_lightmix(context.scene, context.view_layer)
+        corona.refresh_lightmix(context.scene, corona.main_view_layer(context.scene))
         corona.apply_vfb(context.scene)
         return {"FINISHED"}
 

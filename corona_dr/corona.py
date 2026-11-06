@@ -56,7 +56,7 @@ def apply_quality(scene):
         _set(cy, "denoising_input_passes", "RGB_ALBEDO_NORMAL")
         _set(cy, "denoising_prefilter", "ACCURATE")
         _set(cy, "denoising_quality", "HIGH")
-    vl = bpy.context.view_layer if bpy.context.view_layer in scene.view_layers[:] else scene.view_layers[0]
+    vl = main_view_layer(scene)
     if in_comp or (c.lightmix_on and c.vfb_enabled):
         vl.cycles.denoising_store_passes = True
     # интерактив во вьюпорте — тоже с денойзом
@@ -79,6 +79,18 @@ def apply_quality(scene):
     _set(cy, "use_guiding", c.path_guiding)
 
 
+def main_view_layer(scene):
+    """Один и тот же слой для денойз-проходов, LightMix и VFB: активный, если он рендерится,
+    иначе первый включённый."""
+    ctx_vl = getattr(bpy.context, "view_layer", None)
+    if ctx_vl is not None and ctx_vl in scene.view_layers[:] and ctx_vl.use:
+        return ctx_vl
+    for v in scene.view_layers:
+        if v.use:
+            return v
+    return scene.view_layers[0]
+
+
 def apply_tonemap(scene):
     c = scene.corona
     try:
@@ -95,11 +107,7 @@ def apply_vfb(scene):
     c = scene.corona
     if not c.enabled or not c.vfb_enabled:
         return
-    vl = scene.view_layers[0]
-    for v in scene.view_layers:
-        if v.use:
-            vl = v
-            break
+    vl = main_view_layer(scene)
     vfb.rebuild_scene(scene, vfb_settings(scene), vl.name)
     apply_tonemap(scene)
     for win in bpy.context.window_manager.windows if bpy.context.window_manager else []:

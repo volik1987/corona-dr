@@ -55,7 +55,7 @@ def render_tile(scene, task):
     r.use_file_extension = True
     path = os.path.join(task["out_dir"], "tile_%s" % task["tile_id"])
     r.filepath = path
-    bpy.ops.render.render(write_still=True)
+    bpy.ops.render.render(write_still=True, scene=scene.name)
     out = path + ".exr"
     if not os.path.exists(out):
         cand = [f for f in os.listdir(task["out_dir"]) if f.startswith("tile_") and f.endswith(".exr")]
@@ -80,7 +80,7 @@ def render_frames(scene, task):
         scene.frame_set(f)
         name = "frame_%05d" % f
         r.filepath = os.path.join(task["out_dir"], name)
-        bpy.ops.render.render(write_still=True)
+        bpy.ops.render.render(write_still=True, scene=scene.name)
         found = [x for x in os.listdir(task["out_dir"]) if x.startswith(name + ".")]
         if not found:
             raise RuntimeError("кадр %d не записан" % f)
@@ -92,6 +92,11 @@ def main():
     with open(argv[0], encoding="utf-8") as fh:
         task = json.load(fh)
     scene = bpy.context.scene
+    if task.get("scene"):
+        scene = bpy.data.scenes.get(task["scene"]) or scene
+        win = bpy.context.window
+        if win is not None:
+            win.scene = scene
     if task.get("device") == "CPU":
         scene.cycles.device = "CPU"
     if task["mode"] == "tile":

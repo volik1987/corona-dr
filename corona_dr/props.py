@@ -6,18 +6,24 @@ from . import corona
 from .dr import protocol
 
 
+def _sc(self, context):
+    """Сцена-владелец свойства (а не активная: панель могла быть закреплена за другой сценой)."""
+    sc = getattr(self, "id_data", None)
+    return sc if isinstance(sc, bpy.types.Scene) else context.scene
+
+
 def _upd_quality(self, context):
-    corona.apply_quality(context.scene)
+    corona.apply_quality(_sc(self, context))
     if self.enabled and self.vfb_enabled:
-        corona.apply_vfb(context.scene)
+        corona.apply_vfb(_sc(self, context))
 
 
 def _upd_vfb(self, context):
-    corona.apply_vfb(context.scene)
+    corona.apply_vfb(_sc(self, context))
 
 
 def _upd_vfb_toggle(self, context):
-    sc = context.scene
+    sc = _sc(self, context)
     if self.enabled and self.vfb_enabled:
         corona.apply_quality(sc)
         corona.apply_vfb(sc)
@@ -27,7 +33,7 @@ def _upd_vfb_toggle(self, context):
 
 
 def _upd_enabled(self, context):
-    sc = context.scene
+    sc = _sc(self, context)
     if self.enabled:
         corona.apply_quality(sc)
         corona.apply_vfb(sc)
@@ -44,7 +50,7 @@ def _upd_preset(self, context):
 
 def _upd_tonemap(self, context):
     if self.enabled:
-        corona.apply_tonemap(context.scene)
+        corona.apply_tonemap(_sc(self, context))
 
 
 def _upd_viewport_comp(self, context):

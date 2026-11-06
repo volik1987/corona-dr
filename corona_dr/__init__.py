@@ -62,7 +62,7 @@ def register():
     corona_ops.register()
     dr_ops.register()
     ui.register()
-    bpy.app.timers.register(_autostart, first_interval=1.0)
+    bpy.app.timers.register(_autostart, first_interval=1.0, persistent=True)
 
 
 def unregister():

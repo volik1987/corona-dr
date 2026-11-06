@@ -21,7 +21,8 @@ POST_SCRIPT = os.path.join(HERE, "post.py")
 def parse_frames(text):
     """'1-50, 60, 70-80' → [1..50, 60, 70..80]"""
     out = []
-    for part in (text or "").replace(";", ",").split(","):
+    text = (text or "").replace("–", "-").replace("—", "-").replace("−", "-")
+    for part in text.replace(";", ",").split(","):
         part = part.strip()
         if not part:
             continue
@@ -96,6 +97,14 @@ class Task:
         self.progress = 0.0
 
 
+class NodeBusy(Exception):
+    """Узел занят другим заданием — это не ошибка рендера, попытку не тратим."""
+
+
+class LocalError(Exception):
+    """Ошибка на головном (запись кадра на диск и т. п.) — узел ни при чём."""
+
+
 class NodeState:
     def __init__(self, host, port, name=None, weight=1.0):
         self.host, self.port = host, int(port)
@@ -150,6 +159,7 @@ class Job:
         self.log_lines = deque(maxlen=200)
         self.result = None
         self._threads = []
+        self._socks = set()
         os.makedirs(workdir, exist_ok=True)
 
     # -------------------------------------------------------- служебное
@@ -229,7 +239,8 @@ class Job:
             while self.personal[idx]:
                 self.common.append(self.personal[idx].popleft())
             if not self._alive_nodes() and not self._all_done():
-                self.error = "не осталось работающих узлов"
+                why = "; ".join(f"{x.name}: {x.error}" for x in self.nodes if x.error)
+                self.error = "не осталось работающих узлов" + (f" ({why})" if why else "")
                 self.cancelled.set()
         self.log(f"узел {n.name}: {reason} — его задания уходят другим")
 
@@ -247,6 +258,18 @@ class Job:
     def cancel(self):
         self.error = self.error or "отменено"
         self.cancelled.set()
+        self._close_socks()
+
+    def _close_socks(self):
+        """Разбудить потоки, застрявшие в send/recv (передача сцены, ожидание файла)."""
+        import socket as _s
+        with self.lock:
+            socks = list(self._socks)
+        for s in socks:
+            try:
+                s.shutdown(_s.SHUT_RDWR)
+            except OSError:
+                pass
 
     def wait(self, timeout=None):
         return self.finished.wait(timeout)
@@ -277,11 +300,29 @@ class Job:
     def _connect(self, idx):
         n = self.nodes[idx]
         s = P.connect(n.host, n.port, timeout=5.0)
+        with self.lock:
+            self._socks.add(s)
+        try:
+            return self._handshake(n, s)
+        except BaseException:
+            try:
+                s.close()
+            except OSError:
+                pass
+            raise
+
+    def _handshake(self, n, s):
+        if self.cancelled.is_set():
+            raise ConnectionError("отменено")
         P.send_msg(s, {"cmd": "hello", "key": self.key})
-        hdr, _ = P.recv_msg(s)
+        try:
+            hdr, _ = P.recv_msg(s)
+        except (P.ProtocolError, ValueError, UnicodeDecodeError):
+            raise PermissionError("по этому адресу не узел Corona DR")
         if hdr.get("type") == "error":
-            s.close()
             raise PermissionError(hdr.get("error"))
+        if hdr.get("type") != "info":
+            raise PermissionError("по этому адресу не узел Corona DR")
         n.name = hdr.get("name") or n.name
         P.send_msg(s, {"cmd": "has_blend", "sha": self.sha})
         hdr, _ = P.recv_msg(s)
@@ -308,7 +349,9 @@ class Job:
                 except PermissionError as e:
                     self._node_dead(idx, str(e))
                     return
-                except OSError as e:
+                except (OSError, ValueError, P.ProtocolError) as e:
+                    if self.cancelled.is_set():
+                        break
                     fails += 1
                     if fails >= 3:
                         self._node_dead(idx, f"нет связи ({e})")
@@ -326,6 +369,20 @@ class Job:
             try:
                 self._run_task(idx, sock, t)
                 fails = 0
+            except NodeBusy:
+                with self.lock:          # вернуть задание без штрафа и подождать узел
+                    t.status, t.progress, t.node = "ждёт", 0.0, None
+                    self.common.appendleft(t)
+                n.current = ""
+                n.status = "занят другим заданием"
+                time.sleep(max(self.retry_delay, 3.0))
+            except LocalError as e:
+                n.current = ""
+                with self.lock:
+                    self.error = str(e)
+                self.log(self.error)
+                self.cancel()
+                break
             except (OSError, ConnectionError, ValueError, P.ProtocolError) as e:
                 try:
                     sock.close()
@@ -397,15 +454,20 @@ class Job:
                 elif typ == "file":
                     path = data
                     if self.on_file:
-                        path = self.on_file(self, t, path) or path
+                        try:
+                            path = self.on_file(self, t, path) or path
+                        except Exception as e:
+                            raise LocalError(f"не сохранить результат «{t.label}» на этом компьютере: {e}")
                     files.append(path)
                 elif typ == "done":
                     break
                 elif typ == "error":
+                    if hdr.get("busy"):
+                        raise NodeBusy()
                     raise RuntimeError(hdr.get("error", "ошибка узла"))
         finally:
             try:
-                sock.settimeout(None)
+                sock.settimeout(P.IO_TIMEOUT)
             except OSError:
                 pass
         with self.lock:
@@ -427,7 +489,7 @@ class Job:
             raise TimeoutError()
         if not first:
             raise ConnectionError("узел закрыл соединение")
-        sock.settimeout(None)
+        sock.settimeout(P.IO_TIMEOUT)
         try:
             magic, jlen, size = P._HDR.unpack(P._recv_exact(sock, P._HDR.size))
             if magic != P.MAGIC:
@@ -455,7 +517,7 @@ class Job:
 # ---------------------------------------------------------------- готовые сценарии
 def build_tile_job(blend, nodes, W, H, tiles_count, tile_kind, frame, view_layer, workdir,
                    blender_bin, vfb_settings, denoise, out_final, out_format=None, key="",
-                   device=None, log=print, post_log=None, post_mode="corona"):
+                   device=None, log=print, post_log=None, post_mode="corona", scene=None):
     """post_mode: 'corona' — VFB аддона; 'scene' — обычный рендер: собственный
     компоновщик сцены (если есть) + денойз Cycles, если он был включён."""
     tiles = make_tiles(W, H, tiles_count, tile_kind)
@@ -465,6 +527,8 @@ def build_tile_job(blend, nodes, W, H, tiles_count, tile_kind, frame, view_layer
                    "tile": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},
                    "view_layer": view_layer, "denoise_passes": bool(denoise),
                    "label": f"часть {i + 1}/{len(tiles)}"}
+        if scene:
+            payload["scene"] = scene
         if device:
             payload["device"] = device
         tasks.append(Task(i, "tile", payload, f"часть {i + 1}/{len(tiles)}"))
@@ -472,7 +536,7 @@ def build_tile_job(blend, nodes, W, H, tiles_count, tile_kind, frame, view_layer
     def finalize(job):
         post = {"W": W, "H": H, "tiles": [], "out_exr": os.path.join(workdir, "assembled.exr"),
                 "out_final": out_final, "vfb": vfb_settings, "denoise": bool(denoise),
-                "format": out_format, "post_mode": post_mode}
+                "format": out_format, "post_mode": post_mode, "scene": scene}
         for t in job.tasks:
             exr = [f for f in t.files if f.endswith(".exr")][0]
             post["tiles"].append(dict(path=exr, **t.payload["tile"]))
@@ -482,7 +546,7 @@ def build_tile_job(blend, nodes, W, H, tiles_count, tile_kind, frame, view_layer
         job.log("сборка кадра и денойз на головном…")
         cmd = [blender_bin, "-b", blend, "-Y", "--python", POST_SCRIPT, "--", pj]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                             errors="replace", stdin=subprocess.DEVNULL)
+                             encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, **P.POPEN_KW)
         if post_log:
             post_log(res.stdout)
         err = [l[10:] for l in res.stdout.splitlines() if l.startswith("CDR_ERROR ")]
@@ -496,7 +560,7 @@ def build_tile_job(blend, nodes, W, H, tiles_count, tile_kind, frame, view_layer
 
 
 def build_anim_job(blend, nodes, frames, dest_for_frame, workdir, distribution="AUTO",
-                   node_frames=None, chunk=1, steal=True, key="", device=None, log=print):
+                   node_frames=None, chunk=1, steal=True, key="", device=None, log=print, scene=None):
     """distribution: AUTO — общая очередь; WEIGHTED — по весам узлов непрерывными кусками;
     MANUAL — node_frames[i] = список кадров узла i (остальные кадры — в общую очередь).
     dest_for_frame(frame, ext) → путь, куда головной кладёт кадр."""
@@ -526,6 +590,8 @@ def build_anim_job(blend, nodes, frames, dest_for_frame, workdir, distribution="
     for i, g in enumerate(groups):
         label = f"кадр {g[0]}" if len(g) == 1 else f"кадры {g[0]}–{g[-1]}"
         payload = {"mode": "frames", "frames": g, "label": label}
+        if scene:
+            payload["scene"] = scene
         if device:
             payload["device"] = device
         tasks.append(Task(i, "frames", payload, label, frames=g, pref=assign.get(g[0])))

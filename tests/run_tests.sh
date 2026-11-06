@@ -12,6 +12,12 @@ echo "== установка $ZIP в чистый профиль $PROFILE"
 "$BLENDER" --factory-startup --command extension install-file -r user_default -e "$ZIP"
 echo "== тест аддона"
 "$BLENDER" -b --python tests/test_addon.py 2>&1 | grep -E "^  (OK|FAIL)|TEST_|Traceback" || true
+echo "== крайние сценарии"
+"$BLENDER" -b --python tests/test_scenarios.py 2>&1 | grep -E "^  (OK|FAIL)|TEST_|Traceback" || true
+if [ -z "$NO_GUI" ]; then
+  echo "== Blender с интерфейсом"
+  "$BLENDER" --python tests/test_gui.py -- "$PROFILE/gui.png" 2>&1 | grep -E "^  (OK|FAIL)|GUI_|Traceback" || true
+fi
 unset BLENDER_USER_RESOURCES
 echo "== тест сетевого рендера"
 "$BLENDER" -b --factory-startup --python tests/test_dr.py 2>&1 | grep -E "^  (OK|FAIL)|TEST_|найдено|разниц|скачок" || true

@@ -58,11 +58,19 @@ class NodeServer:
 
     # ------------------------------------------------------------ запуск/стоп
     def start(self):
-        self._tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._tcp.bind(("0.0.0.0", self.port))
-        self._tcp.listen(8)
-        self._udp = self._make_udp()
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if os.name == "nt":   # на Windows REUSEADDR пустил бы второй узел на занятый порт
+                tcp.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE", -5), 1)
+            else:
+                tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp.bind(("0.0.0.0", self.port))
+            tcp.listen(8)
+            self._udp = self._make_udp()
+        except OSError:
+            tcp.close()
+            raise
+        self._tcp = tcp
         for target in (self._accept_loop, self._discovery_loop):
             t = threading.Thread(target=target, daemon=True)
             t.start()
@@ -90,6 +98,10 @@ class NodeServer:
     def stop(self):
         self._stop.set()
         self.kill_render()
+        try:   # Linux: без shutdown висящий accept() держит порт
+            self._tcp.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
         for s in (self._tcp, self._udp):
             try:
                 s.close()
@@ -128,8 +140,11 @@ class NodeServer:
                 data, addr = self._udp.recvfrom(1024)
             except socket.timeout:
                 continue
-            except OSError:
-                break
+            except OSError:   # Windows: ConnectionResetError после ICMP — не повод умирать
+                if self._stop.is_set():
+                    break
+                time.sleep(0.2)
+                continue
             if data.strip() == P.DISCOVER_REQ:
                 try:
                     self._udp.sendto(json.dumps(self.info()).encode("utf-8"), addr)
@@ -148,10 +163,11 @@ class NodeServer:
 
     def _serve(self, conn, addr):
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        P.set_keepalive(conn)
         authed = not self.key
         try:
             while not self._stop.is_set():
-                hdr, payload = self._recv(conn)
+                hdr, payload = self._recv(conn, authed)
                 cmd = hdr.get("cmd")
                 if cmd == "hello":
                     if self.key and hdr.get("key") != self.key:
@@ -186,29 +202,51 @@ class NodeServer:
             except OSError:
                 pass
 
-    def _recv(self, conn):
-        # Заголовок читаем отдельно, чтобы знать, куда сохранять файл .blend
-        magic, jlen, size = P._HDR.unpack(P._recv_exact(conn, P._HDR.size))
+    def _recv(self, conn, authed=True):
+        # Между командами ждём сколько угодно (головной может долго ждать работу),
+        # а вот посреди сообщения — не дольше IO_TIMEOUT.
+        conn.settimeout(None)
+        first = P._recv_exact(conn, 1)
+        conn.settimeout(P.IO_TIMEOUT)
+        magic, jlen, size = P._HDR.unpack(first + P._recv_exact(conn, P._HDR.size - 1))
         if magic != P.MAGIC:
             raise P.ProtocolError("чужой протокол")
+        if jlen > 1 << 20:
+            raise P.ProtocolError("слишком длинный заголовок")
         hdr = json.loads(P._recv_exact(conn, jlen).decode("utf-8"))
         payload = None
         if size:
+            if not authed:   # без ключа не принимаем данные — даже на диск
+                raise P.ProtocolError("данные без авторизации")
             if hdr.get("cmd") == "blend":
+                import hashlib
                 dst = self._blend_path(hdr["sha"])
                 tmp = dst + ".part"
                 got = 0
-                with open(tmp, "wb") as f:
-                    while got < size:
-                        part = conn.recv(min(size - got, P.CHUNK))
-                        if not part:
-                            raise ConnectionError("обрыв при приёме сцены")
-                        f.write(part)
-                        got += len(part)
-                os.replace(tmp, dst)
+                h = hashlib.sha1()
+                try:
+                    with open(tmp, "wb") as f:
+                        while got < size:
+                            part = conn.recv(min(size - got, P.CHUNK))
+                            if not part:
+                                raise ConnectionError("обрыв при приёме сцены")
+                            f.write(part)
+                            h.update(part)
+                            got += len(part)
+                    if h.hexdigest() != str(hdr.get("sha", "")).lower():
+                        raise P.ProtocolError("сцена пришла повреждённой (sha не совпал)")
+                    os.replace(tmp, dst)
+                finally:
+                    if os.path.exists(tmp):
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
                 self._prune_cache()
                 payload = dst
             else:
+                if size > 64 << 20:
+                    raise P.ProtocolError("слишком большое сообщение")
                 payload = P._recv_exact(conn, size)
         return hdr, payload
 
@@ -240,7 +278,7 @@ class NodeServer:
             P.send_msg(conn, {"type": "error", "error": "нет сцены, сначала отправьте .blend"})
             return
         if not self._render_lock.acquire(blocking=False):
-            P.send_msg(conn, {"type": "error", "error": "узел занят"})
+            P.send_msg(conn, {"type": "error", "error": "узел занят", "busy": True})
             return
         task = hdr["task"]
         out_dir = os.path.join(self.cache_dir, "out_" + uuid.uuid4().hex[:8])
@@ -268,6 +306,8 @@ class NodeServer:
             if self.preview_enabled and files:
                 self._keep_preview(files[-1], task.get("label", ""))
         finally:
+            self.kill_render()      # головной отключился посреди рендера — процесс не оставляем
+            self._proc = None
             self.busy = False
             self.status = "ожидание"
             self.progress = 0.0
@@ -288,9 +328,14 @@ class NodeServer:
 
     def _run(self, conn, cmd):
         lines = queue.Queue()
-        self._proc = proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, text=True, errors="replace", bufsize=1)
+        try:
+            self._proc = proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", bufsize=1, **P.POPEN_KW)
+        except OSError as e:
+            err = f"не запустить Blender «{cmd[0]}»: {e}"
+            self.log(f"[узел {self.name}] {err}")
+            return False, [], err
 
         def reader():
             for line in proc.stdout:

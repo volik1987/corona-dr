@@ -75,7 +75,7 @@ def assemble(job):
 
 
 def finish(job, exr):
-    scene = bpy.context.scene
+    scene = bpy.data.scenes.get(job.get("scene") or "") or bpy.context.scene
     r = scene.render
     r.resolution_x, r.resolution_y, r.resolution_percentage = job["W"], job["H"], 100
     r.use_border = False
@@ -104,7 +104,7 @@ def finish(job, exr):
         imf.file_format = "PNG"
     r.use_file_extension = False
     r.filepath = job["out_final"]
-    bpy.ops.render.render(write_still=True)
+    bpy.ops.render.render(write_still=True, scene=scene.name)
     if not os.path.exists(job["out_final"]):
         raise RuntimeError("итоговое изображение не записано")
     log("CDR_FILE " + job["out_final"])

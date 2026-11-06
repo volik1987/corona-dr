@@ -6,7 +6,7 @@ name = "Corona DR — визуализация и сетевой рендер"
 tagline = "Cycles как Corona: денойз, VFB, LightMix и сетевой рендер по LAN"
 maintainer = "volik1987"
 type = "add-on"
-website = "https://github.com/volik1987"
+website = "https://github.com/volik1987/corona-dr"
 
 tags = ["Render", "Lighting", "Material"]
 

@@ -206,6 +206,9 @@ class CORONA_PT_dr(_RenderPanel, bpy.types.Panel):
         on = dr_ops.node_running()
         row.operator("corona_dr.node_toggle", text="Остановить узел" if on else "Включить узел рендера",
                      icon="PAUSE" if on else "PLAY", depress=on)
+        p = dr_ops.prefs()
+        if p:
+            box.prop(p, "node_preview")
         if on:
             n = dr_ops.NODE
             box.label(text=f"«{n.name}» порт {n.port}: {n.status}", icon="CHECKMARK")

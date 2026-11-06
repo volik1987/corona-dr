@@ -6,6 +6,11 @@ from . import corona_ops, dr_ops, props, ui
 from .dr import protocol
 
 
+def _preview_changed(self, _context):
+    if dr_ops.NODE is not None:
+        dr_ops.NODE.preview_enabled = self.node_preview
+
+
 class CoronaDRPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -21,6 +26,10 @@ class CoronaDRPreferences(bpy.types.AddonPreferences):
     blender_path: bpy.props.StringProperty(name="Blender для рендера", subtype="FILE_PATH", default="",
                                            description="Пусто — этот же Blender")
     autostart: bpy.props.BoolProperty(name="Запускать узел вместе с Blender", default=False)
+    node_preview: bpy.props.BoolProperty(
+        name="Показывать готовые части на узле", default=True, update=_preview_changed,
+        description="Узел показывает в Image Editor последнюю готовую часть кадра или кадр анимации "
+                    "(изображение «Corona DR узел»)")
 
     def draw(self, context):
         col = self.layout.column()
@@ -31,6 +40,7 @@ class CoronaDRPreferences(bpy.types.AddonPreferences):
         col.prop(self, "cache_dir")
         col.prop(self, "blender_path")
         col.prop(self, "autostart")
+        col.prop(self, "node_preview")
         col.label(text=f"Поиск узлов — UDP-порт {protocol.DISCOVERY_PORT}; откройте TCP {self.node_port} в брандмауэре.",
                   icon="INFO")
 

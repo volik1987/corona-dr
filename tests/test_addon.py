@@ -145,6 +145,14 @@ def main():
     r = wait_runner(dr_ops)
     check(r.ok and os.path.exists(r.final_path), f"«Кадр» (Corona): {dr.job_status}")
     check(bpy.data.images.get("Corona DR") is not None, "результат загружен как изображение «Corona DR»")
+    node = dr_ops.NODE
+    pimg = bpy.data.images.get(dr_ops.PREVIEW_NAME)
+    check(node is not None and node.preview_seq > 0 and os.path.exists(node.preview_path or ""),
+          f"узел сохранил предпросмотр части: {node and node.preview_path} (№{node and node.preview_seq})")
+    check(pimg is not None and bpy.path.abspath(pimg.filepath) == node.preview_path, f"предпросмотр узла загружен как «{dr_ops.PREVIEW_NAME}»")
+    prefs = dr_ops.prefs()
+    prefs.node_preview = False
+    seq_before = node.preview_seq if node else 0
 
     # обычный рендер: Corona выключен, свой компоновщик сцены + денойз Cycles
     c.enabled = False
@@ -167,6 +175,10 @@ def main():
     bpy.ops.corona_dr.start()
     r = wait_runner(dr_ops)
     check(r.ok and os.path.exists(r.final_path), f"«Кадр» обычным рендером: {dr.job_status}")
+    node = dr_ops.NODE
+    check(node is not None and node.preview_seq == seq_before,
+          "предпросмотр выключен настройкой — узел не сохраняет части")
+    prefs.node_preview = True
     if r.ok:
         # эталон: обычный локальный рендер той же сцены (денойз Cycles + компоновщик сцены)
         sc.render.filepath = os.path.join(OUT, "local_plain.png")

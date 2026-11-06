@@ -44,6 +44,11 @@ class NodeServer:
         self.status = "ожидание"
         self.progress = 0.0
         self.jobs_done = 0
+        # предпросмотр: копия последнего готового файла (часть кадра или кадр)
+        self.preview_enabled = False
+        self.preview_path = None
+        self.preview_label = ""
+        self.preview_seq = 0
         self._render_lock = threading.Lock()
         self._proc = None
         self._stop = threading.Event()
@@ -260,12 +265,26 @@ class NodeServer:
                 P.send_msg(conn, {"type": "file", "name": os.path.basename(path)}, file_path=path)
             P.send_msg(conn, {"type": "done", "count": len(files)})
             self.jobs_done += 1
+            if self.preview_enabled and files:
+                self._keep_preview(files[-1], task.get("label", ""))
         finally:
             self.busy = False
             self.status = "ожидание"
             self.progress = 0.0
             self._render_lock.release()
             shutil.rmtree(out_dir, ignore_errors=True)
+
+    def _keep_preview(self, path, label):
+        try:
+            pdir = os.path.join(self.cache_dir, "preview")
+            os.makedirs(pdir, exist_ok=True)
+            dst = os.path.join(pdir, "last" + os.path.splitext(path)[1].lower())
+            shutil.copyfile(path, dst + ".tmp")
+            os.replace(dst + ".tmp", dst)
+            self.preview_path, self.preview_label = dst, label
+            self.preview_seq += 1
+        except OSError as e:
+            self.log(f"[узел {self.name}] предпросмотр не сохранён: {e}")
 
     def _run(self, conn, cmd):
         lines = queue.Queue()

@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "corona_dr"
-version = "1.0.1"
+version = "1.1.0"
 name = "Corona DR — визуализация и сетевой рендер"
 tagline = "Cycles как Corona: денойз, VFB, LightMix и сетевой рендер по LAN"
 maintainer = "volik1987"

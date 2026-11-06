@@ -45,6 +45,7 @@ def start_node():
                         name=(p.node_name if p and p.node_name else None), cache_dir=cache,
                         threads=p.node_threads if p else 0, key=p.key if p else "",
                         log=print).start()
+    NODE.preview_enabled = bool(p.node_preview) if p else True
     _ensure_timer()
     return NODE
 
@@ -232,7 +233,7 @@ def start_job(context):
     return runner
 
 
-def show_image(path, name="Corona DR"):
+def show_image(path, name="Corona DR", editor=True, new_window=True):
     img = bpy.data.images.get(name)
     if img and bpy.path.abspath(img.filepath) == path:
         img.reload()
@@ -241,6 +242,8 @@ def show_image(path, name="Corona DR"):
             bpy.data.images.remove(img)
         img = bpy.data.images.load(path)
         img.name = name
+    if not editor:
+        return img
     wm = bpy.context.window_manager
     for win in wm.windows:
         for area in win.screen.areas:
@@ -248,6 +251,8 @@ def show_image(path, name="Corona DR"):
                 area.spaces.active.image = img
                 area.tag_redraw()
                 return img
+    if not new_window:
+        return img
     # нет редактора изображений — открываем новое окно
     try:
         win = wm.windows[0]
@@ -293,8 +298,40 @@ def _redraw():
                 area.tag_redraw()
 
 
+PREVIEW_NAME = "Corona DR узел"
+_preview_seen = None   # (id узла, номер предпросмотра)
+_preview_window_opened = False
+
+
+def _update_node_preview():
+    """Показ последней готовой части/кадра, которые отрендерил узел этого компьютера."""
+    global _preview_seen, _preview_window_opened
+    n = NODE
+    if n is None:
+        return
+    p = prefs()
+    n.preview_enabled = bool(p.node_preview) if p else True
+    key = (id(n), n.preview_seq)
+    if not n.preview_enabled or key == _preview_seen or not n.preview_path:
+        return
+    _preview_seen = key
+    # этот же компьютер — головной: не перебиваем его Image Editor, только обновляем картинку
+    head_busy = RUNNER is not None
+    try:
+        img = show_image(n.preview_path, PREVIEW_NAME, editor=not head_busy,
+                         new_window=not _preview_window_opened)
+        _preview_window_opened = True
+        print(f"Corona DR: узел показал «{n.preview_label}» → {img.name}")
+    except Exception as e:
+        print("Corona DR: предпросмотр узла:", e)
+
+
 def _update_ui():
     global RUNNER
+    try:
+        _update_node_preview()
+    except Exception as e:
+        print("Corona DR: предпросмотр узла:", e)
     scene = bpy.context.scene
     if scene is None:
         return RUNNER is not None

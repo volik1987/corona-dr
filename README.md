@@ -8,17 +8,17 @@
    (аналог Corona DR). Работает **с любой сценой**: с режимом Corona, с обычными
    настройками Cycles и собственным компоновщиком, а также с EEVEE.
 
-**Скачать:** [corona_dr-1.0.1.zip](https://github.com/volik1987/corona-dr/releases/latest/download/corona_dr-1.0.1.zip)
+**Скачать:** [corona_dr-1.1.0.zip](https://github.com/volik1987/corona-dr/releases/latest/download/corona_dr-1.1.0.zip)
 (страница релизов — [Releases](https://github.com/volik1987/corona-dr/releases)).
 В репозитории файл собирается в `dist/` командой `./build.sh`.
 
 ## Установка
 
 Blender → Edit → Preferences → Get Extensions → ⌄ (вверху справа) → **Install from Disk…** →
-выбрать `corona_dr-1.0.1.zip`. Или из терминала:
+выбрать `corona_dr-1.1.0.zip`. Или из терминала:
 
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender --command extension install-file -r user_default -e dist/corona_dr-1.0.1.zip
+/Applications/Blender.app/Contents/MacOS/Blender --command extension install-file -r user_default -e dist/corona_dr-1.1.0.zip
 ```
 
 Аддон ставится на **каждый** компьютер, который будет рендерить (или узел запускается без
@@ -66,6 +66,13 @@ Blender → Edit → Preferences → Get Extensions → ⌄ (вверху спр
 процессе `blender -b`, поэтому интерфейс не блокируется. В настройках аддона: имя, порт,
 **общий ключ сети** (узел примет задания только с тем же ключом), число потоков, папка кэша,
 автозапуск узла вместе с Blender.
+
+**Предпросмотр на узле** — галочка «Показывать готовые части на узле» (в панели под кнопкой
+узла и в настройках аддона, включена по умолчанию). Сам рендер идёт в фоне без окна, но после
+каждой готовой части кадра или кадра анимации узел показывает её в Image Editor как
+изображение «Corona DR узел» (если редактора нет — один раз откроется отдельное окно).
+Если этот же компьютер — головной и идёт его задание, картинка только обновляется и не
+перебивает показ итога.
 
 Узел без интерфейса (ферма, другой Mac/ПК без монитора):
 
